@@ -1,101 +1,130 @@
-from rest_framework import viewsets
+from rest_framework import viewsets, status
+from rest_framework.response import Response
+from rest_framework.decorators import action, api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated, AllowAny
 from django.contrib.auth.models import User
-from rest_framework.response import Response
-from rest_framework.views import APIView
 from .models import *
 from .serializers import *
-
-# ------------------------------
-# Public viewsets (tidak perlu login)
-# ------------------------------
 
 class ProductViewSet(viewsets.ModelViewSet):
     queryset = Product.objects.all()
     serializer_class = ProductSerializer
     permission_classes = [AllowAny]
 
-class CategoryViewSet(viewsets.ModelViewSet):
-    queryset = Category.objects.all()
-    serializer_class = CategorySerializer
-    permission_classes = [AllowAny]
-
-class ProductSizeViewSet(viewsets.ModelViewSet):
-    queryset = ProductSize.objects.all()
-    serializer_class = ProductSizeSerializer
-    permission_classes = [AllowAny]
-
-# ------------------------------
-# Authenticated viewsets (harus login)
-# ------------------------------
-
-class JournalViewSet(viewsets.ModelViewSet):
-    queryset = Journal.objects.all()  # Tambahan
-    serializer_class = JournalSerializer
-    permission_classes = [IsAuthenticated]
-
-    def get_queryset(self):
-        return Journal.objects.filter(user=self.request.user)
-
-    def perform_create(self, serializer):
-        serializer.save(user=self.request.user)
-
-class CartViewSet(viewsets.ModelViewSet):
-    queryset = Cart.objects.all()  # Tambahan
-    serializer_class = CartSerializer
-    permission_classes = [IsAuthenticated]
-
-    def get_queryset(self):
-        return Cart.objects.filter(user=self.request.user)
-
-    def perform_create(self, serializer):
-        serializer.save(user=self.request.user)
-
-class CartItemViewSet(viewsets.ModelViewSet):
-    queryset = CartItem.objects.all()  # Tambahan
+class CartItemViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = CartItemSerializer
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
         return CartItem.objects.filter(cart__user=self.request.user)
 
-    def perform_create(self, serializer):
-        serializer.save()
+class CartViewSet(viewsets.ModelViewSet):
+    queryset = Cart.objects.all()
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        return Cart.objects.filter(user=self.request.user)
+
+    def get_serializer_class(self):
+        if self.action == 'add':
+            return CartItemWriteSerializer
+        return CartSerializer
+
+    @action(detail=False, methods=['post'])
+    def add(self, request):
+        product_id = request.data.get('product')
+        quantity = request.data.get('quantity', 1)
+        size = request.data.get('size')
+        price = request.data.get('price')
+
+        if not all([product_id, size, price]):
+            return Response({'error': 'Missing required fields'}, status=status.HTTP_400_BAD_REQUEST)
+
+        cart, _ = Cart.objects.get_or_create(user=request.user)
+
+        CartItem.objects.create(
+            cart=cart,
+            product_id=product_id,
+            quantity=quantity,
+            size=size,
+            price=price
+        )
+
+        return Response({'message': 'Item added to cart'})
+
+    @action(detail=False, methods=['post'])
+    def checkout(self, request):
+        cart = Cart.objects.filter(user=request.user).first()
+        if not cart or not cart.items.exists():
+            return Response({'error': 'Keranjang kosong'}, status=400)
+
+        order = Order.objects.create(user=request.user, status='Pending')
+
+        for item in cart.items.all():
+            OrderItem.objects.create(
+                order=order,
+                product=item.product,
+                quantity=item.quantity,
+                price=item.price,
+            )
+
+        cart.items.all().delete()
+
+        return Response({'message': 'Checkout berhasil', 'order_id': order.id})
 
 class OrderViewSet(viewsets.ModelViewSet):
-    queryset = Order.objects.all()  # Tambahan
+    queryset = Order.objects.all()
     serializer_class = OrderSerializer
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
         return Order.objects.filter(user=self.request.user)
 
+class JournalViewSet(viewsets.ModelViewSet):
+    queryset = Journal.objects.all()
+    serializer_class = JournalSerializer
+    permission_classes = [IsAuthenticated]
+
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
 
-class OrderItemViewSet(viewsets.ModelViewSet):
-    queryset = OrderItem.objects.all()  # Tambahan
-    serializer_class = OrderItemSerializer
-    permission_classes = [IsAuthenticated]
+@api_view(['POST'])
+@permission_classes([AllowAny])
+def register(request):
+    username = request.data.get('username')
+    email = request.data.get('email')
+    password = request.data.get('password')
 
-    def get_queryset(self):
-        return OrderItem.objects.filter(order__user=self.request.user)
+    if User.objects.filter(username=username).exists():
+        return Response({'error': 'Username already exists'}, status=status.HTTP_400_BAD_REQUEST)
+    if User.objects.filter(email=email).exists():
+        return Response({'error': 'Email already exists'}, status=status.HTTP_400_BAD_REQUEST)
 
-# ------------------------------
-# Tambahan: Endpoint Profile User
-# ------------------------------
+    user = User.objects.create_user(username=username, email=email, password=password)
+    user.is_active = True
+    user.save()
+    return Response({'message': 'User registered successfully'})
 
-from rest_framework import serializers
-from rest_framework.permissions import IsAuthenticated
-
-class UserProfileSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = User
-        fields = ['id', 'username', 'email', 'first_name', 'last_name']
-
-class ProfileView(APIView):
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request):
-        serializer = UserProfileSerializer(request.user)
-        return Response(serializer.data)
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def user_detail(request):
+    orders = Order.objects.filter(user=request.user)
+    order_list = []
+    for order in orders:
+        order_list.append({
+            'id': order.id,
+            'status': order.status,
+            'created_at': order.created_at,
+            'items': [
+                {
+                    'product_name': item.product.name,
+                    'quantity': item.quantity,
+                    'price': item.price
+                } for item in order.items.all()
+            ]
+        })
+    return Response({
+        'username': request.user.username,
+        'email': request.user.email,
+        'orders': order_list
+    })

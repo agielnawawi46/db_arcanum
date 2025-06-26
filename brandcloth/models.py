@@ -47,7 +47,9 @@ class CartItem(models.Model):
     size = models.CharField(max_length=10, default='M')  # ✅ Tambahkan field size!
 
     def __str__(self):
-        return f"{self.product.name} x{self.quantity} ({self.size})"
+        product_name = self.product.name if self.product else 'Unknown Product'
+        size = self.size or 'No Size'
+        return f"{product_name} x{self.quantity} ({size})"
 
 class Order(models.Model):
     user = models.ForeignKey(User, on_delete=models.CASCADE)

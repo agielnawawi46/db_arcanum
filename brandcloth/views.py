@@ -5,6 +5,8 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from django.contrib.auth.models import User
 from .models import *
 from .serializers import *
+from rest_framework.views import APIView
+from rest_framework_simplejwt.authentication import JWTAuthentication
 
 class ProductViewSet(viewsets.ModelViewSet):
     queryset = Product.objects.all()
@@ -87,6 +89,37 @@ class JournalViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         serializer.save(user=self.request.user)
+
+class AddToCartView(APIView):
+    authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        product_id = request.data.get('product')
+        quantity = request.data.get('quantity', 1)
+        size = request.data.get('size')
+        price = request.data.get('price')
+
+        if not all([product_id, size, price]):
+            return Response({'error': 'Missing required fields'}, status=400)
+
+        try:
+            product = Product.objects.get(id=product_id)
+        except Product.DoesNotExist:
+            return Response({'error': 'Product not found'}, status=404)
+
+        cart, _ = Cart.objects.get_or_create(user=request.user)
+
+        CartItem.objects.create(
+            cart=cart,
+            product=product,
+            quantity=quantity,
+            size=size,
+            price=price
+        )
+
+        return Response({'message': 'Item added to cart'}, status=201)
+
 
 @api_view(['POST'])
 @permission_classes([AllowAny])

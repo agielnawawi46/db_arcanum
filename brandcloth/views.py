@@ -14,6 +14,8 @@ from rest_framework.response import Response
 from rest_framework.decorators import action
 from .models import PaymentProof, Order
 from .serializers import PaymentProofSerializer
+from .models import Product, Order, OrderItem
+from django.db.models import Sum
 
 
 from .models import *
@@ -302,6 +304,7 @@ def user_detail(request):
             'id': order.id,
             'status': order.status,
             'created_at': order.created_at,
+            'tracking_number': order.tracking_number,
             'items': [
                 {
                     'product_name': item.product.name,
@@ -313,5 +316,38 @@ def user_detail(request):
     return Response({
         'username': request.user.username,
         'email': request.user.email,
+        'is_staff': request.user.is_staff,
         'orders': order_list
+    })
+
+@api_view(['GET'])
+@permission_classes([IsAdminUser])
+def full_report(request):
+    total_users = User.objects.count()
+    total_products = Product.objects.count()
+
+    # Hanya ambil order yang sudah dibayar atau sudah dikirim
+    orders = Order.objects.filter(status__in=['payment_done', 'shipped'])
+    total_orders = orders.count()
+
+    # Hitung total pendapatan dari semua order
+    total_revenue = sum(
+        item.price * item.quantity
+        for order in orders
+        for item in order.items.all()
+    )
+
+    # Produk paling laris (top 5)
+    top_products = OrderItem.objects.values(
+        'product__id', 'product__name'
+    ).annotate(
+        total_sold=Sum('quantity')
+    ).order_by('-total_sold')[:5]
+
+    return Response({
+        'total_users': total_users,
+        'total_products': total_products,
+        'total_orders': total_orders,
+        'total_revenue': total_revenue,
+        'top_products': list(top_products),
     })

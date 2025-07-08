@@ -226,8 +226,8 @@ def list_payment_proofs(request):
         })
     return Response(data)
 
-class PaymentProofAdminViewSet(ViewSet):
-    permission_classes = [IsAdminUser]
+class PaymentProofAdminViewSet(viewsets.ReadOnlyModelViewSet):
+    permission_classes = [IsAuthenticated]
 
     def list(self, request):
         proofs = PaymentProof.objects.all().order_by('-created_at')

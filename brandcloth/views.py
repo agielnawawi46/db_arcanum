@@ -1,4 +1,5 @@
 from rest_framework import viewsets, status
+from rest_framework import permissions
 from rest_framework.response import Response
 from rest_framework.decorators import action, api_view, permission_classes, authentication_classes
 from rest_framework.permissions import IsAuthenticated, AllowAny, IsAuthenticatedOrReadOnly, IsAdminUser
@@ -7,6 +8,7 @@ from rest_framework_simplejwt.authentication import JWTAuthentication
 from django.contrib.auth.models import User
 from django.shortcuts import get_object_or_404
 from django.db.models import Sum
+from rest_framework.parsers import MultiPartParser, FormParser
 from .models import *
 from .serializers import *
 
@@ -24,6 +26,12 @@ class ProductViewSet(viewsets.ModelViewSet):
         if category:
             queryset = queryset.filter(category__name__iexact=category)
         return queryset
+    
+class AdminProductViewSet(viewsets.ModelViewSet):
+    queryset = Product.objects.all()
+    serializer_class = ProductSerializer
+    permission_classes = [permissions.IsAdminUser]
+    parser_classes = [MultiPartParser, FormParser]
 
 # ✅ CATEGORY
 class CategoryListAPIView(APIView):
@@ -37,6 +45,15 @@ class CategoryListAPIView(APIView):
 # ===============================
 # ✅ CART & CHECKOUT
 # ===============================
+
+class AdminPaymentProofListView(APIView):
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        proofs = PaymentProof.objects.select_related('order', 'user')
+        serializer = PaymentProofSerializer(proofs, many=True)
+        return Response(serializer.data)
+    
 class CartItemViewSet(viewsets.ReadOnlyModelViewSet):
     serializer_class = CartItemSerializer
     permission_classes = [IsAuthenticated]
@@ -130,20 +147,30 @@ class AddToCartView(APIView):
 # ✅ ORDER
 # ===============================
 class OrderViewSet(viewsets.ModelViewSet):
-    queryset = Order.objects.all()
     serializer_class = OrderSerializer
-    permission_classes = [IsAuthenticated]
     authentication_classes = [JWTAuthentication]
+    permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        return Order.objects.filter(user=self.request.user)
+        user = self.request.user
+        if user.is_staff:
+            return Order.objects.all()
+        return Order.objects.filter(user=user)
+
+    def get_permissions(self):
+        if self.action in ['update', 'partial_update', 'destroy']:
+            return [IsAdminUser()]
+        return [IsAuthenticated()]
 
     def create(self, request, *args, **kwargs):
         items_data = request.data.get('items', [])
         if not items_data:
             return Response({'error': 'Order must have at least one item.'}, status=400)
 
-        order = Order.objects.create(user=request.user, status=request.data.get("status", "pending"))
+        order = Order.objects.create(
+            user=request.user,
+            status=request.data.get("status", "pending")
+        )
 
         for item in items_data:
             OrderItem.objects.create(
@@ -156,6 +183,7 @@ class OrderViewSet(viewsets.ModelViewSet):
 
         serializer = self.get_serializer(order)
         return Response(serializer.data, status=201)
+
 
 # ===============================
 # ✅ SHIPPING & PEMBAYARAN
@@ -171,6 +199,7 @@ class ShippingInfoViewSet(viewsets.ModelViewSet):
         order = get_object_or_404(Order, id=order_id, user=self.request.user)
         serializer.save(order=order)
 
+
 class PaymentProofView(APIView):
     authentication_classes = [JWTAuthentication]
     permission_classes = [IsAuthenticated]
@@ -181,6 +210,13 @@ class PaymentProofView(APIView):
             serializer.save(user=request.user)
             return Response({'message': 'Bukti pembayaran berhasil diunggah'})
         return Response(serializer.errors, status=400)
+
+
+    
+class PaymentProofAdminViewSet(viewsets.ReadOnlyModelViewSet):
+    queryset = PaymentProof.objects.all()
+    serializer_class = PaymentProofSerializer
+    permission_classes = [permissions.IsAdminUser]
 
 # ===============================
 # ✅ VERIFIKASI & RESI (ADMIN)
@@ -207,31 +243,39 @@ def input_tracking_number(request, order_id):
     return Response({'message': 'Nomor resi berhasil disimpan'})
 
 # ✅ ADMIN VIEWSET
-class PaymentProofAdminViewSet(viewsets.ReadOnlyModelViewSet):
-    permission_classes = [IsAuthenticated]
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def list_payment_proofs(request):
+    if request.user.is_staff:
+        proofs = PaymentProof.objects.all()
+    else:
+        proofs = PaymentProof.objects.filter(user=request.user)
+    serializer = PaymentProofSerializer(proofs, many=True)
+    return Response(serializer.data)
 
-    def list(self, request):
-        proofs = PaymentProof.objects.all().order_by('-created_at')
-        serializer = PaymentProofSerializer(proofs, many=True, context={'request': request})
-        return Response(serializer.data)
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def verify_payment(request, order_id):
+    if not request.user.is_staff:
+        return Response({"detail": "Not authorized"}, status=status.HTTP_403_FORBIDDEN)
 
-    @action(detail=True, methods=['post'])
-    def verify(self, request, pk=None):
-        order = get_object_or_404(Order, id=pk)
-        order.status = 'payment_done'
-        order.save()
-        return Response({'message': 'Pembayaran berhasil diverifikasi'})
+    try:
+        proof = PaymentProof.objects.get(order__id=order_id)
+        proof.verified = True
+        proof.save()
+        return Response({"detail": "Payment verified successfully"})
+    except PaymentProof.DoesNotExist:
+        return Response({"detail": "Payment proof not found"}, status=status.HTTP_404_NOT_FOUND)
+    
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def list_payment_proofs(request):
+    if not request.user.is_staff:
+        return Response({"detail": "Unauthorized"}, status=403)
 
-    @action(detail=True, methods=['post'])
-    def set_tracking(self, request, pk=None):
-        tracking_number = request.data.get('tracking_number')
-        if not tracking_number:
-            return Response({'error': 'Tracking number diperlukan'}, status=400)
-        order = get_object_or_404(Order, id=pk)
-        order.tracking_number = tracking_number
-        order.status = 'shipped'
-        order.save()
-        return Response({'message': 'Nomor resi berhasil disimpan'})
+    proofs = PaymentProof.objects.all().order_by('-created_at')
+    serializer = PaymentProofSerializer(proofs, many=True)
+    return Response(serializer.data)
 
 @api_view(['GET'])
 @permission_classes([IsAdminUser])
@@ -258,14 +302,25 @@ class JournalViewSet(viewsets.ModelViewSet):
     queryset = Journal.objects.all()
     serializer_class = JournalSerializer
     authentication_classes = [JWTAuthentication]
+    permission_classes = [AllowAny]  # Public by default
 
-    def get_permissions(self):
-        if self.action in ['list', 'retrieve']:
-            return [AllowAny()]
-        return [IsAuthenticated()]
+    def create(self, request, *args, **kwargs):
+        if not request.user.is_authenticated:
+            return Response({'detail': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
 
-    def perform_create(self, serializer):
-        serializer.save(user=self.request.user)
+        return super().create(request, *args, **kwargs)
+
+    def update(self, request, *args, **kwargs):
+        if not request.user.is_authenticated:
+            return Response({'detail': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        return super().update(request, *args, **kwargs)
+
+    def destroy(self, request, *args, **kwargs):
+        if not request.user.is_authenticated:
+            return Response({'detail': 'Authentication required'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        return super().destroy(request, *args, **kwargs)
 
 # ===============================
 # ✅ AUTH USER
@@ -340,3 +395,28 @@ def full_report(request):
         'total_revenue': total_revenue,
         'top_products': list(top_products),
     })
+
+
+@api_view(['GET'])
+@permission_classes([IsAuthenticated])
+def order_detail(request, order_id):
+    try:
+        order = Order.objects.get(id=order_id)
+    except Order.DoesNotExist:
+        return Response({'error': 'Order not found'}, status=404)
+    serializer = OrderSerializer(order)
+    return Response(serializer.data)
+
+@api_view(['PUT'])
+@permission_classes([IsAdminUser])
+def update_order(request, order_id):
+    try:
+        order = Order.objects.get(id=order_id)
+    except Order.DoesNotExist:
+        return Response({'error': 'Order not found'}, status=404)
+
+    serializer = OrderSerializer(order, data=request.data, partial=True)
+    if serializer.is_valid():
+        serializer.save()
+        return Response(serializer.data)
+    return Response(serializer.errors, status=400)

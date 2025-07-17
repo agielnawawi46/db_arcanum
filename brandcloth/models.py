@@ -27,7 +27,7 @@ class Journal(models.Model):
     title = models.CharField(max_length=200)
     content = models.TextField()
     image = models.ImageField(upload_to='journal/')
-    # user = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True)
+    # user = models.ForeignKey(User, on_delete=models.CASCADE)
 
     def __str__(self):
         return self.title
@@ -97,3 +97,5 @@ class PaymentProof(models.Model):
 
     def __str__(self):
         return f"Payment for Order #{self.order.id}"
+    
+

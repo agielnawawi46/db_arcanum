@@ -7,6 +7,9 @@ class ProductSerializer(serializers.ModelSerializer):
     class Meta:
         model = Product
         fields = '__all__'
+        extra_kwargs = {
+            'image': {'required': False}
+        }
 
 class ProductSizeSerializer(serializers.ModelSerializer):
     class Meta:
@@ -48,10 +51,9 @@ class OrderItemSerializer(serializers.ModelSerializer):
 
 class OrderSerializer(serializers.ModelSerializer):
     items = OrderItemSerializer(many=True, read_only=True)
-
     class Meta:
         model = Order
-        fields = ['id', 'user', 'created_at', 'status', 'items']
+        fields = '__all__'
 
 class OrderStatusSerializer(serializers.ModelSerializer):
     class Meta:
@@ -66,8 +68,6 @@ class UserSerializer(serializers.ModelSerializer):
 
 # === Journal ===
 class JournalSerializer(serializers.ModelSerializer):
-    user = UserSerializer(read_only=True)
-
     class Meta:
         model = Journal
         fields = '__all__'
